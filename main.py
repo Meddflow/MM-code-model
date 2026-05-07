@@ -107,7 +107,7 @@ class MMMLookupResponse(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _nominatim_search(query: str) -> list:
+def _nominatim_search(query: str) -> tuple[float, float] | None:
     resp = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": query, "countrycodes": "au", "format": "json", "limit": 1},
@@ -115,23 +115,45 @@ def _nominatim_search(query: str) -> list:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()
+    results = resp.json()
+    if results:
+        return float(results[0]["lat"]), float(results[0]["lon"])
+    return None
+
+
+def _arcgis_search(query: str) -> tuple[float, float] | None:
+    resp = requests.get(
+        "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+        params={"SingleLine": query, "countryCode": "AUS", "f": "json", "maxLocations": 1, "outFields": ""},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    candidates = resp.json().get("candidates", [])
+    if candidates:
+        loc = candidates[0]["location"]
+        return float(loc["y"]), float(loc["x"])
+    return None
 
 
 def geocode(address: str) -> tuple[float, float]:
-    """Geocode via Nominatim. Falls back to street-level then suburb if no exact match."""
-    results = _nominatim_search(address)
+    """Geocode via Nominatim with ArcGIS fallback."""
+    result = _nominatim_search(address)
+    if result:
+        return result
 
-    # Fallback 1: drop the street number (everything before the first space/comma)
-    if not results:
-        parts = address.replace(",", " ").split()
-        if parts and (parts[0][0].isdigit()):
-            fallback = " ".join(parts[1:])
-            results = _nominatim_search(fallback)
+    # Drop street number and retry Nominatim
+    parts = address.replace(",", " ").split()
+    if parts and parts[0][0].isdigit():
+        result = _nominatim_search(" ".join(parts[1:]))
+        if result:
+            return result
 
-    if not results:
-        raise ValueError(f"Address not found: {address!r}")
-    return float(results[0]["lat"]), float(results[0]["lon"])
+    # Final fallback: ArcGIS (better Australian coverage)
+    result = _arcgis_search(address)
+    if result:
+        return result
+
+    raise ValueError(f"Address not found: {address!r}")
 
 
 def point_in_polygon_mmm(lat: float, lon: float) -> int:
