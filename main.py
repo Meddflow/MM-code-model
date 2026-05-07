@@ -107,16 +107,28 @@ class MMMLookupResponse(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def geocode(address: str) -> tuple[float, float]:
-    """Geocode via Nominatim. Returns (lat, lon)."""
+def _nominatim_search(query: str) -> list:
     resp = requests.get(
         "https://nominatim.openstreetmap.org/search",
-        params={"q": address, "countrycodes": "au", "format": "json", "limit": 1},
+        params={"q": query, "countrycodes": "au", "format": "json", "limit": 1},
         headers={"User-Agent": "mmm-api/1.0"},
         timeout=10,
     )
     resp.raise_for_status()
-    results = resp.json()
+    return resp.json()
+
+
+def geocode(address: str) -> tuple[float, float]:
+    """Geocode via Nominatim. Falls back to street-level then suburb if no exact match."""
+    results = _nominatim_search(address)
+
+    # Fallback 1: drop the street number (everything before the first space/comma)
+    if not results:
+        parts = address.replace(",", " ").split()
+        if parts and (parts[0][0].isdigit()):
+            fallback = " ".join(parts[1:])
+            results = _nominatim_search(fallback)
+
     if not results:
         raise ValueError(f"Address not found: {address!r}")
     return float(results[0]["lat"]), float(results[0]["lon"])
